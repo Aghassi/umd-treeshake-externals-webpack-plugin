@@ -15,5 +15,8 @@
     "react": "16.10.2",
     "react-dom": "16.10.2",
     "styled-components": "^4.4.0"
+  },
+  "scripts": {
+    "build": "webpack-cli --config=./webpack.config.js --progress"
   }
 }
