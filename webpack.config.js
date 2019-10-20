@@ -1,18 +1,11 @@
 const UMDExternalOptimizerPlugin = require('./UMDExternalOptimizerPlugin.js');
+const ExternalPlugin = require('webpack/lib/ExternalsPlugin');
 
 module.exports = {
     mode: 'development',
-    output: {
-        libraryTarget: 'umd'
-    },
     entry: {
         App: './src/App.jsx',
     },
-    externals: [
-        'react',
-        'react-dom',
-        'styled-components'
-    ],
     module: {
         rules: [{
             test: /\.(js|mjs|jsx|ts|tsx)$/,
@@ -42,6 +35,11 @@ module.exports = {
         }
     },
     plugins: [
+        new ExternalPlugin('umd', [
+            'react',
+            'react-dom',
+            'styled-components'
+        ]),
         new UMDExternalOptimizerPlugin()
     ]
 }

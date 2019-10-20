@@ -1,7 +1,12 @@
+const { ConcatSource, OriginalSource, ReplaceSource } = require("webpack-sources");
 const JavascriptModulesPlugin = require('webpack/lib/JavascriptModulesPlugin');
 const NormalModule = require('webpack/lib/NormalModule');
 const ExternalModule = require('webpack/lib/ExternalModule');
 
+/**
+ * This plugin assumes that you are building for UMD, so we don't do any checking in the module graph
+ * against each module to verify that it is of type UMD. We only care about externals
+ */
 module.exports = class UMDExternalOptimizerPlugin {
   apply(compiler) {
     compiler.hooks.thisCompilation.tap('UMDExternalOptimizerPlugin', compilation => {
@@ -16,7 +21,9 @@ module.exports = class UMDExternalOptimizerPlugin {
             module instanceof ExternalModule &&
             (module.externalType === "umd" || module.externalType === "umd2")
         );
-        
+        const rootModules = chunkGraph.getChunkRootModules(chunk);
+        let rootModule = null;
+
         /**
          * Map of externals to their deduped list of connections
          * Connections are a list of "originModules", meaning the module that originally imported the external
@@ -36,7 +43,8 @@ module.exports = class UMDExternalOptimizerPlugin {
          *  'styled-components': [NormalModule]
          * }
          */
-        const externalConnections = {};
+        const externalsToModuleConnections = {};
+        const modulesToExternalsMap = {};
         externals.forEach(external => {
           const moduleConnections = [];
           moduleGraph.getIncomingConnections(external).forEach(connection => {
@@ -46,12 +54,127 @@ module.exports = class UMDExternalOptimizerPlugin {
              */
             if (!moduleConnections.includes(connection.originModule)) {
               moduleConnections.push(connection.originModule);
+
+              // We also create a lookup per module so we can determine which modules need which externals later
+              if (!modulesToExternalsMap[connection.originModule]) {
+                modulesToExternalsMap[connection.originModule.request] = [external];
+              } else {
+                modulesToExternalsMap[connection.originModule.request] = modulesToExternalsMap[connection.originModule].push(external);
+              }
+            }
+            /**
+             * If we come across the "root" of the runtime module, then we need
+             * to know so we can change the IIFE statement in that chunk so that
+             * it can get the external it needs
+             */
+            if (rootModules.includes(connection.originModule)) {
+              rootModule = connection.originModule;
             }
           });
-          externalConnections[external.request] = moduleConnections;
-        })
+          externalsToModuleConnections[external.request] = moduleConnections;
+        });
 
-        
+        /**
+         * The main chunk probably doesn't need a dependency unless one of the
+         * entries is not dynamic and resides in the chunk.
+         * If it does have an entry, we need to wrap it in a template correctly with just that external, not all of them
+         */
+        if (rootModule) {
+          // These are the externals that only the root module requires
+          const rootExternals = modulesToExternalsMap[rootModule.request];
+
+          // This is the source that we will return to the compilation so that it gets written for the file
+          return new ConcatSource(
+            new OriginalSource(
+              "(function webpackUniversalModuleDefinition(root, factory) {\n" +
+              getAuxilaryComment("commonjs2") +
+              "	if(typeof exports === 'object' && typeof module === 'object')\n" +
+              "		module.exports = factory(" +
+              externalsRequireArray("commonjs2") +
+              ");\n" +
+              getAuxilaryComment("amd") +
+              "	else if(typeof define === 'function' && define.amd)\n" +
+              (requiredExternals.length > 0
+                ? this.names.amd && this.namedDefine === true
+                  ? "		define(" +
+                  libraryName(this.names.amd) +
+                  ", " +
+                  externalsDepsArray(requiredExternals) +
+                  ", " +
+                  amdFactory +
+                  ");\n"
+                  : "		define(" +
+                  externalsDepsArray(requiredExternals) +
+                  ", " +
+                  amdFactory +
+                  ");\n"
+                : this.names.amd && this.namedDefine === true
+                  ? "		define(" +
+                  libraryName(this.names.amd) +
+                  ", [], " +
+                  amdFactory +
+                  ");\n"
+                  : "		define([], " + amdFactory + ");\n") +
+              (this.names.root || this.names.commonjs
+                ? getAuxilaryComment("commonjs") +
+                "	else if(typeof exports === 'object')\n" +
+                "		exports[" +
+                libraryName(this.names.commonjs || this.names.root) +
+                "] = factory(" +
+                externalsRequireArray("commonjs") +
+                ");\n" +
+                getAuxilaryComment("root") +
+                "	else\n" +
+                "		" +
+                replaceKeys(
+                  accessorAccess(
+                    "root",
+                    this.names.root || this.names.commonjs
+                  )
+                ) +
+                " = factory(" +
+                externalsRootArray(externals) +
+                ");\n"
+                : "	else {\n" +
+                (externals.length > 0
+                  ? "		var a = typeof exports === 'object' ? factory(" +
+                  externalsRequireArray("commonjs") +
+                  ") : factory(" +
+                  externalsRootArray(externals) +
+                  ");\n"
+                  : "		var a = factory();\n") +
+                "		for(var i in a) (typeof exports === 'object' ? exports : root)[i] = a[i];\n" +
+                "	}\n") +
+              `})(${
+              runtimeTemplate.outputOptions.globalObject
+              }, function(${externalsArguments(externals)}) {\nreturn `,
+              "webpack/universalModuleDefinition"
+            ),
+            source,
+            ";\n})"
+          )
+        } else {
+          /**
+           * We need to ensure there are no evals related to externals in the entry chunk
+           * lookup in the second argument of `replace` is what denotes the end of webpack's internal module bootstrap
+           * The starting string is the first external decleration.
+           * Since we don't want any externals in the main chunk here, we are splicing them out
+           */
+          externals.forEach((external) => {
+            // gets the first occurance of the decleration. ReplaceSource uses a full source string, so we need to find the index relative to that
+            const startIndex = source.source().indexOf(`\n/***/ "${external.request}":\n`);
+            // We add the length of the block we are trying to find to ensure that it is also removed during the replace
+            const endIndex = source.source().indexOf('\n\n/***/ })', startIndex) + '\n\n/***/ })'.length;
+            const replacedSource = new ReplaceSource(source);
+            replacedSource.replace(startIndex, endIndex, '')
+            source = new ConcatSource(replacedSource.source());
+          })
+
+          // This will return the entry module without any external evals defined
+          return new ConcatSource(
+            source
+          );
+        }
       });
 
       //   // For rendering the chunks
