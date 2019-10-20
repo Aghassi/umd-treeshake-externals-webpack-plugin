@@ -1,11 +1,19 @@
-const UMDExternalOptimizerPlugin = require('./UMDExternalOptimizerPlugin.js');
 const ExternalPlugin = require('webpack/lib/ExternalsPlugin');
+const UMDExternalOptimizerPlugin = require('./UMDExternalOptimizerPlugin.js');
 
 module.exports = {
     mode: 'development',
     entry: {
         App: './src/App.jsx',
     },
+    // output: {
+    //     libraryTarget: "umd"
+    // },
+    // externals: [
+    //     'react',
+    //     'react-dom',
+    //     'styled-components'
+    // ],
     module: {
         rules: [{
             test: /\.(js|mjs|jsx|ts|tsx)$/,
@@ -40,6 +48,9 @@ module.exports = {
             'react-dom',
             'styled-components'
         ]),
-        new UMDExternalOptimizerPlugin()
+        /**
+         * Since this extends UmdTemplatePlugin, we need to provide arguments so it has context
+         */
+        new UMDExternalOptimizerPlugin("", {})
     ]
 }
