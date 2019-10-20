@@ -255,8 +255,31 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             return "";
           };
 
-          // This is the source that we will return to the compilation so that it gets written for the file
-          debugger;
+          /**
+           * This logic will only strip out what is not external relative to the root module
+           */
+          externals.forEach((external) => {
+            if (!rootExternals.includes(external)) {
+              // gets the first occurance of the decleration. ReplaceSource uses a full source string, so we need to find the index relative to that
+              const startIndex = source.source().indexOf(`\n/***/ "${external.request}":\n`);
+              // We add the length of the block we are trying to find to ensure that it is also removed during the replace
+              const endIndex = source.source().indexOf('\n\n/***/ })', startIndex) + '\n\n/***/ })'.length;
+              // Replace Source is a module that takes the original source string and removes all replacements requested
+              const replacedSource = new ReplaceSource(source);
+              // Each new `replace` call is stored in an array that `ReplaceSource` uses when `.source()` is called. It iterates over each replacement and performs the replacement
+              replacedSource.replace(startIndex, endIndex, '')
+              // We return a new `ConcatSource` as that seems to be the way that webpack does it internally
+              source = new ConcatSource(replacedSource.source());
+            }
+          })
+
+          /**
+           * This is the source that we will return to the compilation so that it gets written for the file
+           * It should only include the externals that are declared in the entry chunk
+           * 
+           * The difference between this and the UmdTemplatePlugin is that we only look
+           * at the external for the main chunk (entry). We don't consider all externals.
+           */
           return new ConcatSource(
             new OriginalSource(
               "(function webpackUniversalModuleDefinition(root, factory) {\n" +
