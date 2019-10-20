@@ -155,25 +155,36 @@ module.exports = class UMDExternalOptimizerPlugin {
           )
         } else {
           /**
-           * We need to ensure there are no evals related to externals in the entry chunk
-           * lookup in the second argument of `replace` is what denotes the end of webpack's internal module bootstrap
-           * The starting string is the first external decleration.
+           * We need to ensure there are no evals related to externals in the entry chunk (webpack puts it there by default)
+           * The starting string is the starting block of the external decleration.
            * Since we don't want any externals in the main chunk here, we are splicing them out
+           * An externals block starts with
+           * ```
+           * /***\/ "react":
+           * ```
+           * and ends with
+           * 
+           * ```
+           * /***\/ }),
+           * ```
+           * 
+           * We use this knowledge to know what code to strip out
            */
           externals.forEach((external) => {
             // gets the first occurance of the decleration. ReplaceSource uses a full source string, so we need to find the index relative to that
             const startIndex = source.source().indexOf(`\n/***/ "${external.request}":\n`);
             // We add the length of the block we are trying to find to ensure that it is also removed during the replace
             const endIndex = source.source().indexOf('\n\n/***/ })', startIndex) + '\n\n/***/ })'.length;
+            // Replace Source is a module that takes the original source string and removes all replacements requested
             const replacedSource = new ReplaceSource(source);
+            // Each new `replace` call is stored in an array that `ReplaceSource` uses when `.source()` is called. It iterates over each replacement and performs the replacement
             replacedSource.replace(startIndex, endIndex, '')
+            // We return a new `ConcatSource` as that seems to be the way that webpack does it internally
             source = new ConcatSource(replacedSource.source());
           })
 
           // This will return the entry module without any external evals defined
-          return new ConcatSource(
-            source
-          );
+          return source;
         }
       });
 
