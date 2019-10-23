@@ -1,4 +1,4 @@
-const { ConcatSource, OriginalSource, ReplaceSource } = require("webpack-sources");
+const { ConcatSource, OriginalSource, ReplaceSource, RawSource } = require("webpack-sources");
 const JavascriptModulesPlugin = require('webpack/lib/JavascriptModulesPlugin');
 const UmdTemplatePlugin = require('webpack/lib/UmdTemplatePlugin');
 const ExternalModule = require('webpack/lib/ExternalModule');
@@ -384,8 +384,6 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
 
       // For rendering the chunks
       hooks.renderChunk.tap('UMDExternalOptimizerPlugin', (source, { chunk, moduleGraph, chunkGraph, runtimeTemplate }) => {
-        debugger;
-
         // An array of all modules in the given chunk
         const moduleRequestsInChunk = [];
         // Determine if this chunk requires any externals, otherwise we leave the source alone
@@ -552,6 +550,31 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
           };
 
           /**
+           * Given an array for the chunk, generate the module declaration that will cause the require
+           * to execute the module requirement
+           * @param {Array} externals externals for the given chunk
+           */
+          const generateExternalModuleBlock = externals => {
+            const generatedModules = [];
+
+            externals.forEach(external => {
+              generatedModules.push(new RawSource(`\n\n/***/ \"${external.request}\":
+/*!************************!*
+!*** external \"${external.request}\" ***!
+\************************/
+/*! exports [maybe provided (runtime-defined)] [no usage info] */
+/*! runtime requirements: module */
+/***/ ((module) => {
+            eval(\"module.exports = __WEBPACK_EXTERNAL_MODULE_${external.request}__;\\n\\n//# sourceURL=webpack:///external_%22${external.id}%22?\");
+/***/ }),\n\n`));
+            });
+            return generatedModules;
+          }
+
+          source.children.splice(source.children.length - 1, 0, ',');
+          source.children.splice(source.children.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
+          debugger;
+          /**
            * Similar to how we handle the root chunk, we wrap the other chunks in an IIFE statement to have them fetch
            * and invoke externals that matter to them.
            */
@@ -619,7 +642,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
               `})(${
               runtimeTemplate.outputOptions.globalObject
               }, function(${externalsArguments(chunkExternals)}) {\nreturn `,
-              "webpack/universalModuleDefinition"
+              "webpack/universalModuleDefinition",
             ),
             source,
             ";\n})"
