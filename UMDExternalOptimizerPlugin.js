@@ -73,8 +73,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
          *  'styled-components': [NormalModule]
          * }
          */
-        const externalsToModuleConnections = {};
-        const modulesToExternalsMap = {};
+        this.modulesToExternalsMap = {};
         externals.forEach(external => {
           const moduleConnections = [];
           moduleGraph.getIncomingConnections(external).forEach(connection => {
@@ -86,10 +85,10 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
               moduleConnections.push(connection.originModule);
 
               // We also create a lookup per module so we can determine which modules need which externals later
-              if (!modulesToExternalsMap[connection.originModule]) {
-                modulesToExternalsMap[connection.originModule.request] = [external];
+              if (!this.modulesToExternalsMap[connection.originModule]) {
+                this.modulesToExternalsMap[connection.originModule.request] = [external];
               } else {
-                modulesToExternalsMap[connection.originModule.request] = modulesToExternalsMap[connection.originModule].push(external);
+                this.modulesToExternalsMap[connection.originModule.request] = this.modulesToExternalsMap[connection.originModule].push(external);
               }
             }
             /**
@@ -101,7 +100,6 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
               rootModule = connection.originModule;
             }
           });
-          externalsToModuleConnections[external.request] = moduleConnections;
         });
 
         /**
@@ -111,7 +109,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
          */
         if (rootModule) {
           // These are the externals that only the root module requires
-          const rootExternals = modulesToExternalsMap[rootModule.request];
+          const rootExternals = this.modulesToExternalsMap[rootModule.request];
 
 					/**
 					 * This function constructs an array of named arguments for the IIFE that will map to each external in the bundle
@@ -131,7 +129,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
           /** @type {ExternalModule[]} */
           const optionalExternals = [];
           if (this.optionalAmdExternalAsGlobal) {
-            for (const m of externals) {
+            for (const m of rootExternals) {
               if (m.isOptional(moduleGraph)) {
                 optionalExternals.push(m);
               } else {
@@ -384,16 +382,253 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
         }
       });
 
-      //   // For rendering the chunks
-      //   hooks.renderChunk.tap('UMDExternalOptimizerPlugin', (source, { chunk, moduleGraph, chunkGraph, runtimeTemplate }) => {
-      //     // For all chunks in the graph, get the modules that are considered externals
-      //     const modules = chunkGraph.getChunkModules(chunk).filter(
-      //       module =>
-      //         module instanceof ExternalModule &&
-      //         (module.externalType === "umd" || module.externalType === "umd2")
-      //     );
-      //   });
+      // For rendering the chunks
+      hooks.renderChunk.tap('UMDExternalOptimizerPlugin', (source, { chunk, moduleGraph, chunkGraph, runtimeTemplate }) => {
+        debugger;
 
+        // An array of all modules in the given chunk
+        const moduleRequestsInChunk = [];
+        // Determine if this chunk requires any externals, otherwise we leave the source alone
+        const modulesWithExternals = [];
+        // Get the modules in the chunk, then filter them into their raw requests since we map those to externals
+        chunkGraph.getChunkModules(chunk).forEach(module => {
+          moduleRequestsInChunk.push(module.request);
+        });
+        // Used to determine if a chunk has externals associated with it.
+        Object.keys(this.modulesToExternalsMap).forEach(request => {
+          if (moduleRequestsInChunk.includes(request)) {
+            modulesWithExternals.push(request)
+          }
+        })
+
+        if (modulesWithExternals.length) {
+          // These are the externals that only the root module requires
+          let chunkExternals = [];
+          modulesWithExternals.forEach(request => {
+            // Create the canonical list of all externals for this chunk
+            chunkExternals = chunkExternals.concat(this.modulesToExternalsMap[request])
+          })
+
+					/**
+					 * This function constructs an array of named arguments for the IIFE that will map to each external in the bundle
+					 * @param {Array} modules external modules to be declared
+					 */
+          const externalsArguments = modules => {
+            return modules
+              .map(
+                m =>
+                  `__WEBPACK_EXTERNAL_MODULE_${Template.toIdentifier(
+                    `${chunkGraph.getModuleId(m)}`
+                  )}__`
+              )
+              .join(", ");
+          };
+
+          /** @type {ExternalModule[]} */
+          const optionalExternals = [];
+          if (this.optionalAmdExternalAsGlobal) {
+            for (const m of chunkExternals) {
+              if (m.isOptional(moduleGraph)) {
+                optionalExternals.push(m);
+              } else {
+                chunkExternals.push(m);
+              }
+            }
+            chunkExternals = chunkExternals.concat(optionalExternals);
+          }
+
+          // Define the name of the AMD Factory if any exists
+          let amdFactory = "factory";
+          if (optionalExternals.length > 0) {
+            const wrapperArguments = externalsArguments(chunkExternals);
+            const factoryArguments =
+              chunkExternals.length > 0
+                ? externalsArguments(chunkExternals) +
+                ", " +
+                externalsRootArray(chunkExternals)
+                : externalsRootArray(chunkExternals);
+            amdFactory =
+              `function webpackLoadOptionalExternalModuleAmd(${wrapperArguments}) {\n` +
+              `			return factory(${factoryArguments});\n` +
+              "		}";
+          } else {
+            amdFactory = "factory";
+          }
+          /**
+           * Gets the name of a given library
+           * @param {String} library 
+           */
+          const libraryName = library => {
+            return JSON.stringify(replaceKeys([].concat(library).pop()));
+          };
+
+          // Given a string, replace the string with the path of the given chunk
+          const replaceKeys = str => {
+            return compilation.getPath(str, {
+              chunk
+            });
+          };
+
+          /**
+           * Given a list of external modules, get the array for AMD output
+           * @param {Array} modules the external modules array for the entry chunk 
+           */
+          const externalsDepsArray = modules => {
+            return `[${replaceKeys(
+              modules
+                .map(m =>
+                  JSON.stringify(
+                    typeof m.request === "object" ? m.request.amd : m.request
+                  )
+                )
+                .join(", ")
+            )}]`;
+          };
+
+          /**
+           * This takes in the target type (cjs, amd, etc) and then returns the require string with the
+           * library of the external module subbed in.
+           * This code is copied from UMDTemplatePlugin out of Webpack's source code.
+           * @param {String} type commonjs, amd, umd
+           * @param {Array} externals the externals for the entry module (so we don't bloat the entry with unnecessary externals)
+           */
+          const externalsRequireArray = (type, externals) => {
+            return replaceKeys(
+              externals
+                .map(m => {
+                  let expr;
+                  let request = m.request;
+                  if (typeof request === "object") {
+                    request = request[type];
+                  }
+                  if (request === undefined) {
+                    throw new Error(
+                      "Missing external configuration for type:" + type
+                    );
+                  }
+                  if (Array.isArray(request)) {
+                    expr = `require(${JSON.stringify(
+                      request[0]
+                    )})${accessorToObjectAccess(request.slice(1))}`;
+                  } else {
+                    expr = `require(${JSON.stringify(request)})`;
+                  }
+                  if (m.isOptional(moduleGraph)) {
+                    expr = `(function webpackLoadOptionalExternalModule() { try { return ${expr}; } catch(e) {} }())`;
+                  }
+                  return expr;
+                })
+                .join(", ")
+            );
+          };
+
+          /**
+           * The array that will go in the root module that contains externals for that module
+           * This root array is used by the `factory` defined in the UMD header below
+           * @param {Array} modules 
+           */
+          const externalsRootArray = modules => {
+            return replaceKeys(
+              modules
+                .map(m => {
+                  let request = m.request;
+                  if (typeof request === "object") request = request.root;
+                  return `root${accessorToObjectAccess([].concat(request))}`;
+                })
+                .join(", ")
+            );
+          };
+
+          // Help define any auxilary comments in the final output if necessary
+          const auxiliaryComment = this.auxiliaryComment;
+          const getAuxilaryComment = type => {
+            if (auxiliaryComment) {
+              if (typeof auxiliaryComment === "string")
+                return "\t//" + auxiliaryComment + "\n";
+              if (auxiliaryComment[type])
+                return "\t//" + auxiliaryComment[type] + "\n";
+            }
+            return "";
+          };
+
+          /**
+           * Similar to how we handle the root chunk, we wrap the other chunks in an IIFE statement to have them fetch
+           * and invoke externals that matter to them.
+           */
+          return new ConcatSource(
+            new OriginalSource(
+              "(function webpackUniversalModuleDefinition(root, factory) {\n" +
+              getAuxilaryComment("commonjs2") +
+              "	if(typeof exports === 'object' && typeof module === 'object')\n" +
+              "		module.exports = factory(" +
+              externalsRequireArray("commonjs2", chunkExternals) +
+              ");\n" +
+              getAuxilaryComment("amd") +
+              "	else if(typeof define === 'function' && define.amd)\n" +
+              (chunkExternals.length > 0
+                ? this.names.amd && this.namedDefine === true
+                  ? "		define(" +
+                  libraryName(this.names.amd) +
+                  ", " +
+                  externalsDepsArray(chunkExternals) +
+                  ", " +
+                  amdFactory +
+                  ");\n"
+                  : "		define(" +
+                  externalsDepsArray(chunkExternals) +
+                  ", " +
+                  amdFactory +
+                  ");\n"
+                : this.names.amd && this.namedDefine === true
+                  ? "		define(" +
+                  libraryName(this.names.amd) +
+                  ", [], " +
+                  amdFactory +
+                  ");\n"
+                  : "		define([], " + amdFactory + ");\n") +
+              (this.names.root || this.names.commonjs
+                ? getAuxilaryComment("commonjs") +
+                "	else if(typeof exports === 'object')\n" +
+                "		exports[" +
+                libraryName(this.names.commonjs || this.names.root) +
+                "] = factory(" +
+                externalsRequireArray("commonjs", chunkExternals) +
+                ");\n" +
+                getAuxilaryComment("root") +
+                "	else\n" +
+                "		" +
+                replaceKeys(
+                  accessorAccess(
+                    "root",
+                    this.names.root || this.names.commonjs
+                  )
+                ) +
+                " = factory(" +
+                externalsRootArray(chunkExternals) +
+                ");\n"
+                : "	else {\n" +
+                (chunkExternals.length > 0
+                  ? "		var a = typeof exports === 'object' ? factory(" +
+                  externalsRequireArray("commonjs", chunkExternals) +
+                  ") : factory(" +
+                  externalsRootArray(chunkExternals) +
+                  ");\n"
+                  : "		var a = factory();\n") +
+                "		for(var i in a) (typeof exports === 'object' ? exports : root)[i] = a[i];\n" +
+                "	}\n") +
+              `})(${
+              runtimeTemplate.outputOptions.globalObject
+              }, function(${externalsArguments(chunkExternals)}) {\nreturn `,
+              "webpack/universalModuleDefinition"
+            ),
+            source,
+            ";\n})"
+          )
+        } else {
+          // If we have no externals associated with this chunk, we just return it as is.
+          return source;
+        }
+      });
     });
   }
 }
