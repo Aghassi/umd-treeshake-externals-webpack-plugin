@@ -575,8 +575,6 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             externals.forEach(external => {
               // Bookend each module with the request mapping. ex: `react: ((module) => ...)`
               generatedModules.push(`,\n\n/***/ \"${external.request}\":\n`);
-              // Ensure that each module also has a proper comma separating it from the next thing
-              this.renderedExternalModule[external.request].children.push(',\n\n');
               // Push the module onto the array of modules to be added to the source
               generatedModules.push(this.renderedExternalModule[external.request]);
             });
