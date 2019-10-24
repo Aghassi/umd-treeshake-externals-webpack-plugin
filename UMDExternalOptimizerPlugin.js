@@ -382,6 +382,21 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
         }
       });
 
+      /**
+       * Tap into the renderModuleContainer function to get access to the module's container function for externals
+       * For example, we want to get back
+       * ((modules) => eval("module.exports = __WEBPACK_EXTERNAL_MODULE_..."))
+       */
+      hooks.renderModuleContainer.tap('UMDExternalOptimizerPlugin', (source, module, renderContext) => {
+        // Store this information for later, and ensure it doesn't already exist so we don't override it
+        this.renderedExternalModule = this.renderedExternalModule || {};
+        // Only push modules to this mapping that are externals and UMD
+        if (module instanceof ExternalModule &&
+          (module.externalType === "umd" || module.externalType === "umd2")) {
+            this.renderedExternalModule[module.request] = source;
+          }
+      });
+
       // For rendering the chunks
       hooks.renderChunk.tap('UMDExternalOptimizerPlugin', (source, { chunk, moduleGraph, chunkGraph, runtimeTemplate }) => {
         // An array of all modules in the given chunk
@@ -558,22 +573,19 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             const generatedModules = [];
 
             externals.forEach(external => {
-              generatedModules.push(new RawSource(`\n\n/***/ \"${external.request}\":
-/*!************************!*
-!*** external \"${external.request}\" ***!
-\************************/
-/*! exports [maybe provided (runtime-defined)] [no usage info] */
-/*! runtime requirements: module */
-/***/ ((module) => {
-            eval(\"module.exports = __WEBPACK_EXTERNAL_MODULE_${external.request}__;\\n\\n//# sourceURL=webpack:///external_%22${external.id}%22?\");
-/***/ }),\n\n`));
+              // Bookend each module with the request mapping. ex: `react: ((module) => ...)`
+              generatedModules.push(`,\n\n/***/ \"${external.request}\":\n`);
+              // Ensure that each module also has a proper comma separating it from the next thing
+              this.renderedExternalModule[external.request].children.push(',\n\n');
+              // Push the module onto the array of modules to be added to the source
+              generatedModules.push(this.renderedExternalModule[external.request]);
             });
             return generatedModules;
           }
 
-          source.children.splice(source.children.length - 1, 0, ',');
+          // Inject the external modules for this chunk into the generated source code
           source.children.splice(source.children.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
-          debugger;
+
           /**
            * Similar to how we handle the root chunk, we wrap the other chunks in an IIFE statement to have them fetch
            * and invoke externals that matter to them.
