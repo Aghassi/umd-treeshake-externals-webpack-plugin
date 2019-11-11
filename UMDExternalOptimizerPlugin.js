@@ -1,5 +1,6 @@
-const { ConcatSource, OriginalSource, ReplaceSource, RawSource } = require("webpack-sources");
+const { ConcatSource, OriginalSource, ReplaceSource } = require("webpack-sources");
 const JavascriptModulesPlugin = require('webpack/lib/JavascriptModulesPlugin');
+const JsonpTemplatePlugin = require('webpack/lib/web/JsonpTemplatePlugin');
 const UmdTemplatePlugin = require('webpack/lib/UmdTemplatePlugin');
 const ExternalModule = require('webpack/lib/ExternalModule');
 const Template = require("webpack/lib/Template");
@@ -393,8 +394,8 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
         // Only push modules to this mapping that are externals and UMD
         if (module instanceof ExternalModule &&
           (module.externalType === "umd" || module.externalType === "umd2")) {
-            this.renderedExternalModule[module.request] = source;
-          }
+          this.renderedExternalModule[module.request] = source;
+        }
       });
 
       // For rendering the chunks
@@ -600,25 +601,26 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
               "	else if(typeof define === 'function' && define.amd)\n" +
               (chunkExternals.length > 0
                 ? this.names.amd && this.namedDefine === true
-                  ? "		define(" +
+                  // For some reason, `define` does not fire the require callback so instead we use window.require which calls requirejs directly
+                  ? "		window.require(" +
                   libraryName(this.names.amd) +
                   ", " +
                   externalsDepsArray(chunkExternals) +
                   ", " +
                   amdFactory +
                   ");\n"
-                  : "		define(" +
+                  : "		window.require(" +
                   externalsDepsArray(chunkExternals) +
                   ", " +
                   amdFactory +
                   ");\n"
                 : this.names.amd && this.namedDefine === true
-                  ? "		define(" +
+                  ? "		window.require(" +
                   libraryName(this.names.amd) +
                   ", [], " +
                   amdFactory +
                   ");\n"
-                  : "		define([], " + amdFactory + ");\n") +
+                  : "		window.require([], " + amdFactory + ");\n") +
               (this.names.root || this.names.commonjs
                 ? getAuxilaryComment("commonjs") +
                 "	else if(typeof exports === 'object')\n" +
@@ -663,5 +665,41 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
         }
       });
     });
+    compiler.hooks.compilation.tap('UMDExternalOptimizerPlugin', compilation => {
+      const jsonpHooks = JsonpTemplatePlugin.getCompilationHooks(compilation);
+      /**
+       * Need to modify the JSONP template to ensure that the UMD define call at the top is executed
+       * and then causes a callback which invokes the JSONP chunks
+       */
+      jsonpHooks.jsonpScript.tap('UMDExternalOptimizerPlugin', (source, chunk, hash) => {
+          /**
+           * This snippet of code is injected into the webpack bootstrapping code
+           * It was contributed by @krohrsb
+           * It causes the browser to wait on a callback, and if nothing returns within a minute it throws an error
+           */
+          const bootstrapWait = `var error = new Error();
+onLoaded = function (evt) {
+  var out = setTimeout(function () {
+      clearTimeout(out);
+      clearInterval(interval);
+      // Check if the script has finished loading every minute
+      onScriptComplete(evt);
+  }, 60000)
+  var interval = setInterval(function () {
+      if (!loadingEnded()) {
+      clearTimeout(out);
+      clearInterval(interval);
+      onScriptComplete(evt);
+      }
+  }, 200);
+};`;
+
+        source = source.replace(`var onScriptComplete;`, `var onScriptComplete, onLoaded;`);
+        source = source.replace('var error = new Error();', bootstrapWait);
+        source = source.replace('script.onerror = script.onload = onScriptComplete', 'script.onerror = script.onload = onLoaded');
+        debugger;
+        return source;
+      })
+    })
   }
 }
