@@ -423,6 +423,92 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             chunkExternals = chunkExternals.concat(this.modulesToExternalsMap[request])
           })
 
+          /**
+           * Given an array for the chunk, generate the module declaration that will cause the require
+           * to execute the module requirement
+           * @param {Array} externals externals for the given chunk
+           */
+          const generateExternalModuleBlock = externals => {
+            const generatedModules = [];
+
+            externals.forEach(external => {
+              // Bookend each module with the request mapping. ex: `react: ((module) => ...)`
+              generatedModules.push(`,\n\n/***/ \"${external.request}\":\n`);
+              // Push the module onto the array of modules to be added to the source
+              generatedModules.push(this.renderedExternalModule[external.request]);
+            });
+            return generatedModules;
+          }
+
+          // Inject the external modules for this chunk into the generated source code
+          source.children.splice(source.children.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
+          return source;
+        }
+      });
+    });
+    compiler.hooks.compilation.tap('UMDExternalOptimizerPlugin', compilation => {
+      // Gets the hooks for creating javascript modules
+      const hooks = JavascriptModulesPlugin.getCompilationHooks(compilation);
+      // Gets the hooks for creating jsonp template function callback in the entry chunk
+      const jsonpHooks = JsonpTemplatePlugin.getCompilationHooks(compilation);
+      /**
+       * Need to modify the JSONP template to ensure that the UMD define call at the top is executed
+       * and then causes a callback which invokes the JSONP chunks
+       */
+      jsonpHooks.jsonpScript.tap('UMDExternalOptimizerPlugin', (source, chunk, hash) => {
+          /**
+           * This snippet of code is injected into the webpack bootstrapping code
+           * It was contributed by @krohrsb
+           * It causes the browser to wait on a callback, and if nothing returns within a minute it throws an error
+           */
+          const bootstrapWait = `var error = new Error();
+onLoaded = function (evt) {
+  var out = setTimeout(function () {
+      clearTimeout(out);
+      clearInterval(interval);
+      // Check if the script has finished loading every minute
+      onScriptComplete(evt);
+  }, 60000)
+  var interval = setInterval(function () {
+      if (!loadingEnded()) {
+      clearTimeout(out);
+      clearInterval(interval);
+      onScriptComplete(evt);
+      }
+  }, 200);
+};`;
+
+        source = source.replace(`var onScriptComplete;`, `var onScriptComplete, onLoaded;`);
+        source = source.replace('var error = new Error();', bootstrapWait);
+        source = source.replace('script.onerror = script.onload = onScriptComplete', 'script.onerror = script.onload = onLoaded');
+        return source;
+      })
+
+      // For rendering the chunks
+      hooks.renderChunk.tap('UMDExternalOptimizerPlugin', (source, { chunk, moduleGraph, chunkGraph, runtimeTemplate }) => {
+        // An array of all modules in the given chunk
+        const moduleRequestsInChunk = [];
+        // Determine if this chunk requires any externals, otherwise we leave the source alone
+        const modulesWithExternals = [];
+        // Get the modules in the chunk, then filter them into their raw requests since we map those to externals
+        chunkGraph.getChunkModules(chunk).forEach(module => {
+          moduleRequestsInChunk.push(module.request);
+        });
+        // Used to determine if a chunk has externals associated with it.
+        Object.keys(this.modulesToExternalsMap).forEach(request => {
+          if (moduleRequestsInChunk.includes(request)) {
+            modulesWithExternals.push(request)
+          }
+        })
+
+        if (modulesWithExternals.length) {
+          // These are the externals that only the root module requires
+          let chunkExternals = [];
+          modulesWithExternals.forEach(request => {
+            // Create the canonical list of all externals for this chunk
+            chunkExternals = chunkExternals.concat(this.modulesToExternalsMap[request])
+          })
+
 					/**
 					 * This function constructs an array of named arguments for the IIFE that will map to each external in the bundle
 					 * @param {Array} modules external modules to be declared
@@ -565,26 +651,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             return "";
           };
 
-          /**
-           * Given an array for the chunk, generate the module declaration that will cause the require
-           * to execute the module requirement
-           * @param {Array} externals externals for the given chunk
-           */
-          const generateExternalModuleBlock = externals => {
-            const generatedModules = [];
-
-            externals.forEach(external => {
-              // Bookend each module with the request mapping. ex: `react: ((module) => ...)`
-              generatedModules.push(`,\n\n/***/ \"${external.request}\":\n`);
-              // Push the module onto the array of modules to be added to the source
-              generatedModules.push(this.renderedExternalModule[external.request]);
-            });
-            return generatedModules;
-          }
-
-          // Inject the external modules for this chunk into the generated source code
-          source.children.splice(source.children.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
-
+          debugger;
           /**
            * Similar to how we handle the root chunk, we wrap the other chunks in an IIFE statement to have them fetch
            * and invoke externals that matter to them.
@@ -664,42 +731,6 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
           return source;
         }
       });
-    });
-    compiler.hooks.compilation.tap('UMDExternalOptimizerPlugin', compilation => {
-      const jsonpHooks = JsonpTemplatePlugin.getCompilationHooks(compilation);
-      /**
-       * Need to modify the JSONP template to ensure that the UMD define call at the top is executed
-       * and then causes a callback which invokes the JSONP chunks
-       */
-      jsonpHooks.jsonpScript.tap('UMDExternalOptimizerPlugin', (source, chunk, hash) => {
-          /**
-           * This snippet of code is injected into the webpack bootstrapping code
-           * It was contributed by @krohrsb
-           * It causes the browser to wait on a callback, and if nothing returns within a minute it throws an error
-           */
-          const bootstrapWait = `var error = new Error();
-onLoaded = function (evt) {
-  var out = setTimeout(function () {
-      clearTimeout(out);
-      clearInterval(interval);
-      // Check if the script has finished loading every minute
-      onScriptComplete(evt);
-  }, 60000)
-  var interval = setInterval(function () {
-      if (!loadingEnded()) {
-      clearTimeout(out);
-      clearInterval(interval);
-      onScriptComplete(evt);
-      }
-  }, 200);
-};`;
-
-        source = source.replace(`var onScriptComplete;`, `var onScriptComplete, onLoaded;`);
-        source = source.replace('var error = new Error();', bootstrapWait);
-        source = source.replace('script.onerror = script.onload = onScriptComplete', 'script.onerror = script.onload = onLoaded');
-        debugger;
-        return source;
-      })
     })
   }
 }
