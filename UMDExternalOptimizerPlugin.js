@@ -3,6 +3,8 @@ const JavascriptModulesPlugin = require('webpack/lib/JavascriptModulesPlugin');
 const JsonpTemplatePlugin = require('webpack/lib/web/JsonpTemplatePlugin');
 const UmdTemplatePlugin = require('webpack/lib/UmdTemplatePlugin');
 const ExternalModule = require('webpack/lib/ExternalModule');
+const NormalModule = require('webpack/lib/NormalModule');
+const ImportDependency = require('webpack/lib/dependencies/ImportDependency');
 const Template = require("webpack/lib/Template");
 
 /**
@@ -53,6 +55,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             (module.externalType === "umd" || module.externalType === "umd2")
         );
         const rootModules = chunkGraph.getChunkRootModules(chunk);
+        let rootNeedsUMDDecleration = false;
         let rootModule = null;
 
         /**
@@ -95,21 +98,48 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             /**
              * If we come across the "root" of the runtime module, then we need
              * to know so we can change the IIFE statement in that chunk so that
-             * it can get the external it needs
+             * it can get the external it needs.
              */
             if (rootModules.includes(connection.originModule)) {
               rootModule = connection.originModule;
+              rootNeedsUMDDecleration = true;
             }
           });
         });
+
+        /**
+         * For all modules that are part of the entry chunks tree, get only those that are dynamic imports
+         */
+        const entryModules = rootModules.filter((module) => module instanceof NormalModule);
+        entryModules.forEach(entryModule => {
+          moduleGraph.getOutgoingConnections(entryModule).forEach((module) => {
+              /**
+               * If the module that is a child of an entry module is not a dynamic import, we need to leave the
+               * externals in the entry module, otherwise it will break the load of the page
+               */
+              if (!(module.dependency instanceof ImportDependency) && module.originModule.id === entryModule.id && this.modulesToExternalsMap[module.module.request]) {
+                rootNeedsUMDDecleration = true;
+                rootModule = entryModule;
+                debugger;
+                if (this.modulesToExternalsMap[entryModule.request]) {
+                  this.modulesToExternalsMap[entryModule.request].push(this.modulesToExternalsMap[module.module.request]);
+                } else {
+                  this.modulesToExternalsMap[entryModule.request] = this.modulesToExternalsMap[module.module.request];
+                }
+                delete this.modulesToExternalsMap[module.module.request];
+              };
+          });
+        })
 
         /**
          * The main chunk probably doesn't need a dependency unless one of the
          * entries is not dynamic and resides in the chunk.
          * If it does have an entry, we need to wrap it in a template correctly with just that external, not all of them
          */
-        if (rootModule) {
+        debugger;
+        if (rootNeedsUMDDecleration) {
           // These are the externals that only the root module requires
+          debugger;
           const rootExternals = this.modulesToExternalsMap[rootModule.request];
 
 					/**
@@ -349,6 +379,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             ";\n})"
           )
         } else {
+          debugger;
           /**
            * We need to ensure there are no evals related to externals in the entry chunk (webpack puts it there by default)
            * The starting string is the starting block of the external decleration.
@@ -651,7 +682,6 @@ onLoaded = function (evt) {
             return "";
           };
 
-          debugger;
           /**
            * Similar to how we handle the root chunk, we wrap the other chunks in an IIFE statement to have them fetch
            * and invoke externals that matter to them.
