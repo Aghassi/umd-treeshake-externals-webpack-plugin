@@ -416,7 +416,6 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
         })
 
         if (modulesWithExternals.length) {
-          debugger;
           // These are the externals that only the root module requires
           let chunkExternals = [];
           modulesWithExternals.forEach(request => {
