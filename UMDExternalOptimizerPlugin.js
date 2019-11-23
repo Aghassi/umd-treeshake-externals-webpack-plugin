@@ -1,5 +1,5 @@
 const { ConcatSource, OriginalSource, ReplaceSource } = require("webpack-sources");
-const JavascriptModulesPlugin = require('webpack/lib/JavascriptModulesPlugin');
+const JavascriptModulesPlugin = require('webpack/lib/javascript/JavascriptModulesPlugin');
 const JsonpTemplatePlugin = require('webpack/lib/web/JsonpTemplatePlugin');
 const UmdTemplatePlugin = require('webpack/lib/UmdTemplatePlugin');
 const ExternalModule = require('webpack/lib/ExternalModule');
@@ -475,7 +475,8 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
           }
 
           // Inject the external modules for this chunk into the generated source code
-          source.children.splice(source.children.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
+          const sourceChildren = source.getChildren();
+          sourceChildren.splice(sourceChildren.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
           return source;
         }
       });
