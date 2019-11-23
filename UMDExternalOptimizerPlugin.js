@@ -58,6 +58,26 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
         let rootNeedsUMDDecleration = false;
         let rootModule = null;
 
+
+        /**
+         * For all modules that are part of the entry chunks tree, get only those that are dynamic imports
+         */
+        const entryModules = rootModules.filter((module) => module instanceof NormalModule);
+        this.synchronousImportModules = [];
+        entryModules.forEach(entryModule => {
+          moduleGraph.getOutgoingConnections(entryModule).forEach((module) => {
+            /**
+             * If the module that is a child of an entry module is not a dynamic import, we need to leave the
+             * externals in the entry module, otherwise it will break the load of the page
+             */
+            if (!(module.dependency instanceof ImportDependency) && module.originModule.id === entryModule.id && this.modulesToExternalsMap[module.module.request]) {
+              rootNeedsUMDDecleration = true;
+              rootModule = entryModule;
+              this.synchronousImportModules.push(module);
+            };
+          });
+        })
+
         /**
          * Map of externals to their deduped list of connections
          * Connections are a list of "originModules", meaning the module that originally imported the external
@@ -88,11 +108,20 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             if (!moduleConnections.includes(connection.originModule)) {
               moduleConnections.push(connection.originModule);
 
-              // We also create a lookup per module so we can determine which modules need which externals later
-              if (!this.modulesToExternalsMap[connection.originModule]) {
-                this.modulesToExternalsMap[connection.originModule.request] = [external];
+              // If the module is a dynamic import, we account for it's externals, otherwise we put the externals in the root module
+              if (!this.synchronousImportModules.includes(connection.originModule)) {
+                // We also create a lookup per module so we can determine which modules need which externals later
+                if (!this.modulesToExternalsMap[connection.originModule]) {
+                  this.modulesToExternalsMap[connection.originModule.request] = [external];
+                } else {
+                  this.modulesToExternalsMap[connection.originModule.request] = this.modulesToExternalsMap[connection.originModule].push(external);
+                }
               } else {
-                this.modulesToExternalsMap[connection.originModule.request] = this.modulesToExternalsMap[connection.originModule].push(external);
+                if (this.modulesToExternalsMap[entryModule.request]) {
+                  this.modulesToExternalsMap[entryModule.request].push(external);
+                } else {
+                  this.modulesToExternalsMap[entryModule.request] = [external];
+                }
               }
             }
             /**
@@ -107,39 +136,14 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
           });
         });
 
-        /**
-         * For all modules that are part of the entry chunks tree, get only those that are dynamic imports
-         */
-        const entryModules = rootModules.filter((module) => module instanceof NormalModule);
-        entryModules.forEach(entryModule => {
-          moduleGraph.getOutgoingConnections(entryModule).forEach((module) => {
-              /**
-               * If the module that is a child of an entry module is not a dynamic import, we need to leave the
-               * externals in the entry module, otherwise it will break the load of the page
-               */
-              if (!(module.dependency instanceof ImportDependency) && module.originModule.id === entryModule.id && this.modulesToExternalsMap[module.module.request]) {
-                rootNeedsUMDDecleration = true;
-                rootModule = entryModule;
-                debugger;
-                if (this.modulesToExternalsMap[entryModule.request]) {
-                  this.modulesToExternalsMap[entryModule.request].push(this.modulesToExternalsMap[module.module.request]);
-                } else {
-                  this.modulesToExternalsMap[entryModule.request] = this.modulesToExternalsMap[module.module.request];
-                }
-                delete this.modulesToExternalsMap[module.module.request];
-              };
-          });
-        })
 
         /**
          * The main chunk probably doesn't need a dependency unless one of the
          * entries is not dynamic and resides in the chunk.
          * If it does have an entry, we need to wrap it in a template correctly with just that external, not all of them
          */
-        debugger;
         if (rootNeedsUMDDecleration) {
           // These are the externals that only the root module requires
-          debugger;
           const rootExternals = this.modulesToExternalsMap[rootModule.request];
 
 					/**
@@ -379,7 +383,6 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             ";\n})"
           )
         } else {
-          debugger;
           /**
            * We need to ensure there are no evals related to externals in the entry chunk (webpack puts it there by default)
            * The starting string is the starting block of the external decleration.
@@ -487,12 +490,12 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
        * and then causes a callback which invokes the JSONP chunks
        */
       jsonpHooks.jsonpScript.tap('UMDExternalOptimizerPlugin', (source, chunk, hash) => {
-          /**
-           * This snippet of code is injected into the webpack bootstrapping code
-           * It was contributed by @krohrsb
-           * It causes the browser to wait on a callback, and if nothing returns within a minute it throws an error
-           */
-          const bootstrapWait = `var error = new Error();
+        /**
+         * This snippet of code is injected into the webpack bootstrapping code
+         * It was contributed by @krohrsb
+         * It causes the browser to wait on a callback, and if nothing returns within a minute it throws an error
+         */
+        const bootstrapWait = `var error = new Error();
 onLoaded = function (evt) {
   var out = setTimeout(function () {
       clearTimeout(out);
