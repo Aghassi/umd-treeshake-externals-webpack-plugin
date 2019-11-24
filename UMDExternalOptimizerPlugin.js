@@ -70,7 +70,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
              * If the module that is a child of an entry module is not a dynamic import, we need to leave the
              * externals in the entry module, otherwise it will break the load of the page
              */
-            if (!(module.dependency instanceof ImportDependency) && module.originModule.id === entryModule.id && this.modulesToExternalsMap[module.module.request]) {
+            if (!(module.dependency instanceof ImportDependency) && chunkGraph.getModuleId(module.originModule) === chunkGraph.getModuleId(entryModule) && this.modulesToExternalsMap[module.module.request]) {
               rootNeedsUMDDecleration = true;
               rootModule = entryModule;
               this.synchronousImportModules.push(module);
