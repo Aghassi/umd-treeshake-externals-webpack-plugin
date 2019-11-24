@@ -58,26 +58,6 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
         let rootNeedsUMDDecleration = false;
         let rootModule = null;
 
-
-        /**
-         * For all modules that are part of the entry chunks tree, get only those that are dynamic imports
-         */
-        const entryModules = rootModules.filter((module) => module instanceof NormalModule);
-        this.synchronousImportModules = [];
-        entryModules.forEach(entryModule => {
-          moduleGraph.getOutgoingConnections(entryModule).forEach((module) => {
-            /**
-             * If the module that is a child of an entry module is not a dynamic import, we need to leave the
-             * externals in the entry module, otherwise it will break the load of the page
-             */
-            if (!(module.dependency instanceof ImportDependency) && chunkGraph.getModuleId(module.originModule) === chunkGraph.getModuleId(entryModule) && this.modulesToExternalsMap[module.module.request]) {
-              rootNeedsUMDDecleration = true;
-              rootModule = entryModule;
-              this.synchronousImportModules.push(module);
-            };
-          });
-        })
-
         /**
          * Map of externals to their deduped list of connections
          * Connections are a list of "originModules", meaning the module that originally imported the external
@@ -136,6 +116,26 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
           });
         });
 
+        /**
+         * For all modules that are part of the entry chunks tree, get only those that are dynamic imports
+         */
+        const entryModules = rootModules.filter((module) => module instanceof NormalModule);
+        this.synchronousImportModules = [];
+        entryModules.forEach(entryModule => {
+          moduleGraph.getOutgoingConnections(entryModule).forEach((module) => {
+            /**
+             * If the module that is a child of an entry module is not a dynamic import, we need to leave the
+             * externals in the entry module, otherwise it will break the load of the page
+             */
+            const originId = chunkGraph.getModuleId(module.originModule);
+            const entryId = chunkGraph.getModuleId(entryModule);
+            if (!(module.dependency instanceof ImportDependency) && originId === entryId && this.modulesToExternalsMap[module.module.request]) {
+              rootNeedsUMDDecleration = true;
+              rootModule = entryModule;
+              this.synchronousImportModules.push(module);
+            };
+          });
+        })
 
         /**
          * The main chunk probably doesn't need a dependency unless one of the
