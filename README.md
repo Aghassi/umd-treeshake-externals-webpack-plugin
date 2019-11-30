@@ -15,7 +15,7 @@ const ExternalPlugin = require('webpack/lib/ExternalPlugin');
 
 ```js
 plugins: [
-    ExternalPlugin('umd', /* externals object */ [])
+    new ExternalPlugin('umd', /* externals object */ [])
 ]
 ```
 Ensure the first parameter is `"umd"`, and the second parameter is your original externals object.
@@ -26,7 +26,7 @@ Ensure the first parameter is `"umd"`, and the second parameter is your original
 const UMDExternalOptimizerPlugin = require('umd-external-optimizer-webpack-plugin');
 
 plugins: [
-    ExternalPlugin('umd', /* externals object */ [])
-    UMDExternalOptimizerPlugin()
+    new ExternalPlugin('umd', /* externals object */ [])
+    new UMDExternalOptimizerPlugin("", {})
 ]
 ```
