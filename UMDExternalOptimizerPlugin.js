@@ -1,4 +1,4 @@
-const { ConcatSource, OriginalSource, ReplaceSource } = require("webpack-sources");
+const { ConcatSource, OriginalSource, ReplaceSource, RawSource } = require("webpack-sources");
 const JavascriptModulesPlugin = require('webpack/lib/javascript/JavascriptModulesPlugin');
 const JsonpTemplatePlugin = require('webpack/lib/web/JsonpTemplatePlugin');
 const UmdTemplatePlugin = require('webpack/lib/UmdTemplatePlugin');
@@ -464,12 +464,12 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
            * to execute the module requirement
            * @param {Array} externals externals for the given chunk
            */
-          const generateExternalModuleBlock = externals => {
+          const generateExternalModuleBlock = (externals) => {
             const generatedModules = [];
 
             externals.forEach(external => {
               // Bookend each module with the request mapping. ex: `react: ((module) => ...)`
-              generatedModules.push(`,\n\n/***/ \"${external.request}\":\n`);
+              generatedModules.push(`\n\n/***/ \"${external.request}\":\n`);
               // Push the module onto the array of modules to be added to the source
               generatedModules.push(this.renderedExternalModule[external.request]);
             });
@@ -478,7 +478,28 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
 
           // Inject the external modules for this chunk into the generated source code
           const sourceChildren = source.getChildren();
-          sourceChildren.splice(sourceChildren.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
+          const lastSourceItem = sourceChildren[sourceChildren.length-1];
+          /**
+           * Sometimes the compiler will give us back a module that we have to splice in
+           * the external module to, otherwise we will put a comma in the wrong place in the output
+           * and the app won't bootstrap
+           * @example
+           * ```javascript
+           * }), // <-- we need a comma here
+           * 
+           * // external module needs to go here
+           * 
+           * }
+           * ```
+           */
+          if (lastSourceItem.source().includes(`\n\n/***/ })\n\n}`)) {
+            sourceChildren.pop();
+            // We need to add a comma to this bit so we can concat the next module
+            sourceChildren.push(new RawSource(`\n\n/***/ }),`));
+            sourceChildren.push(new RawSource(`\n\n}`));
+          }
+          sourceChildren.splice(sourceChildren.length-1, 0, ...generateExternalModuleBlock(chunkExternals));
+          
           return source;
         }
       });
