@@ -469,7 +469,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
 
             externals.forEach(external => {
               // Bookend each module with the request mapping. ex: `react: ((module) => ...)`
-              generatedModules.push(`\n\n/***/ \"${external.request}\":\n`);
+              generatedModules.push(`,\n\n/***/ \"${external.request}\":\n`);
               // Push the module onto the array of modules to be added to the source
               generatedModules.push(this.renderedExternalModule[external.request]);
             });
@@ -495,7 +495,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
           if (lastSourceItem.source().includes(`\n\n/***/ })\n\n}`)) {
             sourceChildren.pop();
             // We need to add a comma to this bit so we can concat the next module
-            sourceChildren.push(new RawSource(`\n\n/***/ }),`));
+            sourceChildren.push(new RawSource(`\n\n/***/ })`));
             sourceChildren.push(new RawSource(`\n\n}`));
           }
           sourceChildren.splice(sourceChildren.length-1, 0, ...generateExternalModuleBlock(chunkExternals));
