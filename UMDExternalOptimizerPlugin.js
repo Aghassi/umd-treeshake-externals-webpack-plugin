@@ -1,8 +1,10 @@
-const { ConcatSource, OriginalSource, ReplaceSource } = require("webpack-sources");
+const { ConcatSource, OriginalSource, ReplaceSource, RawSource } = require("webpack-sources");
 const JavascriptModulesPlugin = require('webpack/lib/javascript/JavascriptModulesPlugin');
 const JsonpTemplatePlugin = require('webpack/lib/web/JsonpTemplatePlugin');
 const UmdTemplatePlugin = require('webpack/lib/UmdTemplatePlugin');
 const ExternalModule = require('webpack/lib/ExternalModule');
+const NormalModule = require('webpack/lib/NormalModule');
+const ImportDependency = require('webpack/lib/dependencies/ImportDependency');
 const Template = require("webpack/lib/Template");
 
 /**
@@ -53,7 +55,30 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             (module.externalType === "umd" || module.externalType === "umd2")
         );
         const rootModules = chunkGraph.getChunkRootModules(chunk);
+        let rootNeedsUMDDecleration = false;
         let rootModule = null;
+
+        /**
+         * For all modules that are part of the entry chunks tree, get only those that are dynamic imports
+         */
+        const entryModules = rootModules.filter((module) => module instanceof NormalModule);
+        this.synchronousImportModules = [];
+        entryModules.forEach(entryModule => {
+          moduleGraph.getOutgoingConnections(entryModule).forEach((module) => {
+            /**
+             * If the module that is a child of an entry module is not a dynamic import, we need to leave the
+             * externals in the entry module, otherwise it will break the load of the page
+             */
+            const moduleId = chunkGraph.getModuleId(module.module);
+            const originId = chunkGraph.getModuleId(module.originModule);
+            const entryId = chunkGraph.getModuleId(entryModule);
+            if (!(module.dependency instanceof ImportDependency) && originId === entryId && !this.synchronousImportModules.includes(moduleId)) {
+              rootNeedsUMDDecleration = true;
+              rootModule = entryModule;
+              this.synchronousImportModules.push(moduleId);
+            };
+          });
+        })
 
         /**
          * Map of externals to their deduped list of connections
@@ -85,20 +110,31 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             if (!moduleConnections.includes(connection.originModule)) {
               moduleConnections.push(connection.originModule);
 
-              // We also create a lookup per module so we can determine which modules need which externals later
-              if (!this.modulesToExternalsMap[connection.originModule]) {
-                this.modulesToExternalsMap[connection.originModule.request] = [external];
+              // If the module is a dynamic import, we account for it's externals, otherwise we put the externals in the root module
+              const originModuleId = chunkGraph.getModuleId(connection.originModule);
+              if (!this.synchronousImportModules.includes(originModuleId)) {
+                // We also create a lookup per module so we can determine which modules need which externals later
+                if (!this.modulesToExternalsMap[connection.originModule]) {
+                  this.modulesToExternalsMap[connection.originModule.request] = [external];
+                } else {
+                  this.modulesToExternalsMap[connection.originModule.request] = this.modulesToExternalsMap[connection.originModule].push(external);
+                }
               } else {
-                this.modulesToExternalsMap[connection.originModule.request] = this.modulesToExternalsMap[connection.originModule].push(external);
+                if (this.modulesToExternalsMap[rootModule.request]) {
+                  this.modulesToExternalsMap[rootModule.request].push(external);
+                } else {
+                  this.modulesToExternalsMap[rootModule.request] = [external];
+                }
               }
             }
             /**
              * If we come across the "root" of the runtime module, then we need
              * to know so we can change the IIFE statement in that chunk so that
-             * it can get the external it needs
+             * it can get the external it needs.
              */
             if (rootModules.includes(connection.originModule)) {
-              rootModule = connection.originModule;
+              // rootModule = connection.originModule;
+              rootNeedsUMDDecleration = true;
             }
           });
         });
@@ -108,7 +144,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
          * entries is not dynamic and resides in the chunk.
          * If it does have an entry, we need to wrap it in a template correctly with just that external, not all of them
          */
-        if (rootModule) {
+        if (rootNeedsUMDDecleration) {
           // These are the externals that only the root module requires
           const rootExternals = this.modulesToExternalsMap[rootModule.request];
 
@@ -428,7 +464,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
            * to execute the module requirement
            * @param {Array} externals externals for the given chunk
            */
-          const generateExternalModuleBlock = externals => {
+          const generateExternalModuleBlock = (externals) => {
             const generatedModules = [];
 
             externals.forEach(external => {
@@ -442,7 +478,28 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
 
           // Inject the external modules for this chunk into the generated source code
           const sourceChildren = source.getChildren();
-          sourceChildren.splice(sourceChildren.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
+          const lastSourceItem = sourceChildren[sourceChildren.length-1];
+          /**
+           * Sometimes the compiler will give us back a module that we have to splice in
+           * the external module to, otherwise we will put a comma in the wrong place in the output
+           * and the app won't bootstrap
+           * @example
+           * ```javascript
+           * }), // <-- we need a comma here
+           * 
+           * // external module needs to go here
+           * 
+           * }
+           * ```
+           */
+          if (lastSourceItem.source().includes(`\n\n/***/ })\n\n}`)) {
+            sourceChildren.pop();
+            // We need to add a comma to this bit so we can concat the next module
+            sourceChildren.push(new RawSource(`\n\n/***/ })`));
+            sourceChildren.push(new RawSource(`\n\n}`));
+          }
+          sourceChildren.splice(sourceChildren.length-1, 0, ...generateExternalModuleBlock(chunkExternals));
+          
           return source;
         }
       });
@@ -457,12 +514,12 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
        * and then causes a callback which invokes the JSONP chunks
        */
       jsonpHooks.jsonpScript.tap('UMDExternalOptimizerPlugin', (source, chunk, hash) => {
-          /**
-           * This snippet of code is injected into the webpack bootstrapping code
-           * It was contributed by @krohrsb
-           * It causes the browser to wait on a callback, and if nothing returns within a minute it throws an error
-           */
-          const bootstrapWait = `var error = new Error();
+        /**
+         * This snippet of code is injected into the webpack bootstrapping code
+         * It was contributed by @krohrsb
+         * It causes the browser to wait on a callback, and if nothing returns within a minute it throws an error
+         */
+        const bootstrapWait = `var error = new Error();
 onLoaded = function (evt) {
   var out = setTimeout(function () {
       clearTimeout(out);
@@ -652,7 +709,6 @@ onLoaded = function (evt) {
             return "";
           };
 
-          debugger;
           /**
            * Similar to how we handle the root chunk, we wrap the other chunks in an IIFE statement to have them fetch
            * and invoke externals that matter to them.
