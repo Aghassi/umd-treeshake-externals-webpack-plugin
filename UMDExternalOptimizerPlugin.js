@@ -478,7 +478,7 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
 
           // Inject the external modules for this chunk into the generated source code
           const sourceChildren = source.getChildren();
-          const lastSourceItem = sourceChildren[sourceChildren.length-1];
+          const lastSourceItem = sourceChildren[sourceChildren.length - 1];
           /**
            * Sometimes the compiler will give us back a module that we have to splice in
            * the external module to, otherwise we will put a comma in the wrong place in the output
@@ -498,8 +498,8 @@ module.exports = class UMDExternalOptimizerPlugin extends UmdTemplatePlugin {
             sourceChildren.push(new RawSource(`\n\n/***/ })`));
             sourceChildren.push(new RawSource(`\n\n}`));
           }
-          sourceChildren.splice(sourceChildren.length-1, 0, ...generateExternalModuleBlock(chunkExternals));
-          
+          sourceChildren.splice(sourceChildren.length - 1, 0, ...generateExternalModuleBlock(chunkExternals));
+
           return source;
         }
       });
@@ -788,6 +788,20 @@ onLoaded = function (evt) {
           return source;
         }
       });
+
+      /**
+       * Ensure that hash is updated
+       */
+      hooks.chunkHash.tap(
+        "UMDExternalOptimizerPlugin",
+        (chunk, hash, { chunkGraph }) => {
+          if (chunkGraph.getNumberOfEntryModules(chunk) === 0) return;
+          hash.update("umd");
+          hash.update(`${this.names.root}`);
+          hash.update(`${this.names.amd}`);
+          hash.update(`${this.names.commonjs}`);
+        }
+      );
     })
   }
 }
