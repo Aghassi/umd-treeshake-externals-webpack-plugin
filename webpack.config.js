@@ -6,14 +6,9 @@ module.exports = {
     entry: {
         App: './src/App.jsx',
     },
-    // output: {
-    //     libraryTarget: "umd"
-    // },
-    // externals: [
-    //     'react',
-    //     'react-dom',
-    //     'styled-components'
-    // ],
+    output: {
+        filename: "[name].[contenthash].js"
+    },
     module: {
         rules: [{
             test: /\.(js|mjs|jsx|ts|tsx)$/,
